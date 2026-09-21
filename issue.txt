@@ -1,0 +1,242 @@
+
+LQG-FP7 reproduction: issues and execution record
+最终状态摘要（2026-09-21）
+1. MATLAB 初始化和原模型 0.4 ms 仿真完成。
+2. Model Composer 实际生成了 HDL/IP，但 vmcExport 在后续通用编译阶段
+   抛出 basic_string::_M_construct null not valid；此异常仍未解决。
+3. 原始生成的 AXI RTL 有数组敏感列表编译问题。交付副本中仅把该处改为
+   always @*，已通过普通 Verilog 编译及顶层 elaboration。
+4. 交付目录：ip_repo/lqg_axi_test；交付 ZIP：artifacts/lqg_axi_test_patched.zip。
+   修改后重新生成了打包校验信息，Vivado IP check_integrity 通过。
+5. 没有执行板级综合、实现、bitstream 生成或上板测试。不能称为一键无错误复现。
+6. 原源码和工具安装目录均未修改；所有工作副本、日志、缓存和产物都在本 project 下。
+
+Started: 2026-09-21 (Australia/Sydney)
+Scope: initialization -> simulation checks -> Model Composer IP Catalog export.
+No full-board Vivado implementation or bitstream generation is in scope.
+
+[PRE-001] README/model export-entry mismatch (confirmed by static inspection)
+The firmware README names test_kalman_scaling.slx for netlist_lqg_axitest.
+The saved Hub configuration in that model instead targets netlist_lqg_t1.
+The matching entry for netlist_lqg_axitest is lqg_with_axi_test.slx, DUT
+fpga_lqg_axi. This reproduction will use that entry and a fresh output tree.
+
+[PRE-002] Original model retains an author-specific absolute log path
+The working copy's generation/log settings must point inside this project.
+Original source models and the existing reference IP will not be overwritten.
+
+[PRE-003] MATLAB license is not a test of Model Composer's license
+The installed MATLAB/toolboxes passed earlier installation tests. AMD license
+checkout and real HDL compilation will be evaluated by this run, not assumed.
+
+[PRE-004] Device speed-grade mismatch in the reference repository
+The LQG model selects xc7z020clg400-2, whereas the board-level Vivado project
+selects xc7z020clg400-1. Preserve the model for initial reproduction; record the
+IP target and defer board-level target reconciliation unless export requires it.
+
+Filesystem containment:
+All actual writable data is under physics_project/project. Tool executions run
+in a private mount namespace with original tools/system paths read-only. A
+project-local home view and project-local temporary/cache directories contain
+hard-coded user caches. The real HOME environment variable is not changed.
+
+Runtime failures and their disposition will be appended below.
+
+[RUN-001] MATLAB startup failed before any project code executed
+First isolated launch exited 134 with Intel OpenMP Error #179:
+"Function Can't open SHM2 failed", errno 2 (No such file or directory).
+No MATLAB-stage log was created. Investigating sandbox shared-memory/process
+visibility. Core dumps are now disabled in the launcher.
+Diagnosis: file tracing showed the C runtime rejected the disk-backed /dev/shm
+mapping, selected /run for its OpenMP registration object, and hit EROFS.
+Resolution: mount a private tmpfs at project/runtime/shm inside the namespace
+and make the private /dev/shm point there. This keeps shared-memory objects
+within the project's isolated runtime view without writing to host /dev/shm.
+The Xvfb socket directory is also pre-created under project/runtime/tmp.
+The first symlink setup attempt collided with bwrap's auto-created empty shm
+directory. enter_runtime.sh now replaces that private placeholder after setup.
+Status: RESOLVED. The init stage completed with exit code 0. All four matrix
+dimension checks and the finite-coefficient assertion passed; Ts = 64 ns.
+Workspace and figures are saved in artifacts/, log in logs/01_init.log.
+
+[RUN-002] Non-blocking startup message: AIE Tools installation not found
+The selected model uses HDLCompilation, not AI Engine compilation. Model
+loading and the configured Simulink simulation both completed despite this
+message. No AIE Tools were installed or required for these completed stages.
+
+[RUN-003] Headless diagnostics and shutdown latency
+The first diagnostic screenshot tried display :100, while xvfb-run had chosen
+:101. Retrying with the actual display succeeded. No application error dialog
+was visible. An 8-second file/network trace was bounded by timeout (exit 124
+for the diagnostic only, not for MATLAB). A later debugger attachment found
+the inspect process had already exited normally (exit 0). Model Composer's
+MATLAB shutdown can continue for a while after STAGE_SUCCESS is printed.
+These diagnostic attempts did not modify the source or tool installations.
+On the failed export, a separate "Save model before closing?" dialog did
+prevent exit. It was dismissed with No on the private Xvfb display, preserving
+the saved working copy. The driver's error path now closes loaded models
+without saving before exiting, preventing this prompt on subsequent failures.
+
+[STAGE] Simulink execution completed
+The saved model configuration ran from 0 to 4e-4 s with fixed step 8e-9 s.
+simulationOutput.tout contains 50001 samples; ErrorMessage is empty.
+Saved: artifacts/simulation_output.mat; log: logs/simulate.log.
+This is execution evidence only, not a numerical closed-loop acceptance test
+or timing/synthesis/hardware validation.
+
+[RUNTIME 2026-09-21 06:22:02] Stage: export
+Error using vmcGenerate
+Error reported by S-function 'XilinxCompiler' in 'lqg_with_axi_test/Vitis Model
+Composer Hub':
+basic_string::_M_construct null not valid
+
+Error in xmcGenerate
+
+Error in vmcExport
+
+Error in run_stage (line 55)
+                    [status, designInfo] = vmcExport(model, 'closeProgressWindow', 1);
+
+[RUN-005] HDL helper invocation used the Hub path
+xmcGenerateHDLCode(hub) returned "Unrecognized function or variable result_xlr".
+The installed helper has one fixed input plus varargin and three outputs.
+The Hub-only scope may contain no traversable HDL subsystems; retrying with
+the model name rather than the Hub block path. This is a driver/API usage
+investigation, not an identified defect in the LQG algorithm.
+The model-name invocation also failed, now in xlFindSgFig with an empty block
+diagram name. The internal helper evidently requires additional UI/context
+setup and is not used as the final reproduction API. Trying the documented
+System Generator API xlGenerateButton(hub), with the model explicitly opened.
+The 2024.2 runtime explicitly warns that xlGenerateButton is deprecated and
+no longer supported; it also failed in xlFindSgFig. Do not use either legacy
+entrypoint for reproduction. Local help text still describes the old API,
+but runtime behavior takes precedence. No IP output came from these helper
+attempts. Returning to vmcExport with explicit SelectSubsystem configuration.
+
+[RUN-004] IP files emitted, but export API threw a C++ logic error
+The first vmcExport attempt emitted component.xml, RTL and ZIP, and its Vivado
+packaging log reported "check_integrity: Integrity check passed". After that,
+the XilinxCompiler S-function reported basic_string::_M_construct null not valid.
+Do not count directory existence or the XML file-reference check alone as a
+successful export. Attempt 1 is preserved in artifacts/attempt1_export/.
+The next run captures the C++ error stack without changing the algorithm.
+Diagnostic retry reproduced the same exception. The captured stack is:
+fourier::ModelCompiler::getString -> buildInputArg -> buildFunctions ->
+buildFrontEnd -> compile, in Model Composer's XilinxCompiler.mexa64.
+Evidence: logs/export_cpp_backtrace_retry.log. The first debugger attach did
+not resolve symbols across the private namespace; explicitly using the host's
+read-only executable/library paths fixed diagnostic symbol resolution.
+This identifies the exception site, not the exact offending model parameter.
+The HDL IP was already packaged before the generic compiler exception.
+Next: try the installed HDL-only entrypoint xmcGenerateHDLCode (documented
+locally as a copy of xlGenerateButton), preserving all algorithm settings.
+
+[RUNTIME 2026-09-21 06:28:30] Stage: export
+Error using vmcGenerate
+Error reported by S-function 'XilinxCompiler' in 'lqg_with_axi_test/Vitis Model
+Composer Hub':
+basic_string::_M_construct null not valid
+
+Error in xmcGenerate
+
+Error in vmcExport
+
+Error in run_stage (line 67)
+                    [status, designInfo] = vmcExport(model, 'closeProgressWindow', 1);
+
+[RUNTIME 2026-09-21 06:30:23] Stage: export_hdl
+Unrecognized function or variable 'result_xlr'.
+
+Error in xmcGenerateHDLCode
+
+Error in run_stage (line 69)
+                        status = xmcGenerateHDLCode(hub);
+
+[RUNTIME 2026-09-21 06:35:44] Stage: export_hdl
+Error using xlFindSgFig (line 4)
+No block diagram name specified.
+
+Error in xlSetSgFigEnable
+
+Error in xmcGenerateHDLCode
+
+Error in xmcGenerateHDLCode
+
+Error in run_stage (line 69)
+                        [status, designInfo, hdlInfo] = xmcGenerateHDLCode(model);
+
+[RUNTIME 2026-09-21 06:37:50] Stage: export_sysgen
+Error using xlFindSgFig (line 4)
+No block diagram name specified.
+
+Error in xlSetSgFigEnable
+
+Error in xlGenerateButton
+
+Error in xlGenerateButton
+
+Error in run_stage (line 70)
+                        [status, designInfo] = xlGenerateButton(hub);
+
+[RUNTIME 2026-09-21 06:39:49] Stage: export_selected
+Error using vmcGenerate
+Error reported by S-function 'XilinxCompiler' in 'lqg_with_axi_test/Vitis Model
+Composer Hub':
+basic_string::_M_construct null not valid
+
+Error in xmcGenerate
+
+Error in vmcExport
+
+Error in run_stage (line 80)
+                        [status, designInfo] = vmcExport(model, 'closeProgressWindow', 1);
+
+[RUN-006] Explicit DUT selection did not resolve generic export exception
+vmchub_set_param(hub, model/fpga_lqg_axi, SelectSubsystem, 1) succeeded, but
+vmcExport still raised the same XilinxCompiler exception after packaging.
+The regenerated tree is retained in work/matlab/netlist_lqg_axitest.
+
+[RUN-007] Independent RTL compile: unpacked-array sensitivity expression
+Plain Verilog xvlog failed at fpga_lqg_axi_entity_declarations.v:2138:
+VRFC 10-634: event expressions must result in a singular type.
+The generated AXI logic has an explicit sensitivity list containing the
+unpacked array slv_wire_array. The reference repository's pre-generated IP
+contains the same line. This is not an introduced LQG algorithm edit.
+Retrying xvlog in SystemVerilog mode, without changing any RTL.
+Initial compile log is preserved as logs/rtl_compile_verilog_failed.log.
+SystemVerilog mode failed at the same statement; its log is preserved as
+logs/rtl_compile_systemverilog_failed.log. This is not just a language-mode
+configuration issue.
+Resolution in the delivery copy only: replace the explicit array-containing
+sensitivity list with always @*. This infers sensitivity to all RHS inputs
+of the combinational read mux; its RHS and assignments remain unchanged.
+No controller arithmetic, register widths, AXI ports, or clocked processes
+are changed. The raw generator output remains in work/matlab/netlist_lqg_axitest
+and the patched delivery copy is ip_repo/lqg_axi_test. Packaging checksums and
+ZIP will be refreshed, then plain-Verilog parsing/elaboration rerun.
+Status: RESOLVED IN DELIVERY COPY. xvlog (plain Verilog) and xelab both returned
+0; snapshot lqg_ip_elab was built. No compile/elaboration warnings or errors
+were present in the final two logs. No simulation stimulus was applied to
+that elaborated snapshot; this is not a functional AXI protocol test.
+Repackaging returned 0 and reported check_integrity passed / REPACKAGE_SUCCESS.
+The exact one-line change is recorded in artifacts/axi_sensitivity.patch.
+
+[RUN-008] Remaining IP metadata warnings (not silently changed)
+The packager reports no FREQ_HZ for axi_sys_clk and proc_sys_clk, no associated
+bus interface for proc_sys_clk, and a missing Product Guide. These warnings
+persist after repackaging. Preserve the reference clock architecture; resolve
+clock/interface metadata before board integration rather than inventing values.
+The reference generation also emits No IPs found during intermediate catalog
+setup, an absolute repository path relocation warning, no current board_part,
+a missing input clock frequency warning in the generated example BD, and no
+matching VHDL files. Its integrity check nevertheless passes. The example BD
+is a generated packaging artifact, not the actual board design and was not
+synthesized or implemented in this task.
+
+[SCOPE] No claim of physics/control equivalence
+The original simulation saved only tout and metadata in SimulationOutput;
+scope waveforms were not configured for export. The initialized matrices were
+checked for shape and finite coefficients. Numerical closed-loop validation,
+AXI transactions, clock-domain checks, timing closure, and hardware tests remain
+future tasks. The one-line AXI fix has not been formally equivalence checked.
+
