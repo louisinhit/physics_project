@@ -1,0 +1,200 @@
+Vivado integration issues / 2026-09-22
+FINAL FUNCTIONAL RESULT: BOARD_TEST_PASS checks=845 at 136524 ns.
+The errors below are retained debugging history, not outstanding simulation
+failures. See artifacts/test_summary.txt and logs/simulate.log for the final
+passing run; artifacts/final_audit.txt records run/IP/file checks.
+No synthesis, implementation, or bitstream was run.
+
+Scope: only this vivado directory is writable. No synthesis, implementation,
+or bitstream generation. Reference target: README's lqg_fp7, xc7z020clg400-1.
+
+PRE-001: Physical board revision not confirmed by the user. This reproduction
+uses the repository's default first-generation Red Pitaya BD and pinout, not
+the rpgen2 migration script (that script explicitly says XPR is authoritative).
+PRE-002: Previous Model Composer export API has an unresolved post-export
+exception. We use the tested, patched IP from ../ip_repo/lqg_axi_test, copied
+here unchanged initially; do not revert to the raw generated AXI RTL.
+PRE-003: IP clock metadata was missing. The board wrapper explicitly states
+AXI=125 MHz and processing=15.625 MHz. These verified board integration values
+will be applied only to this experiment's copied IP metadata.
+PRE-004: DMA throttle is a separate upstream IP, not covered by the previous
+LQG IP tests. Its package is copied locally and will be validated with the BD.
+
+SIM-001 (testbench, fixed): XSim elaboration rejects procedural reg signals
+connected directly to PS FIXED_IO inout ports (VRFC 10-9171 / 10-3595).
+Added explicit wire nets between testbench drivers and those inout ports.
+The generated LED logic uses XOR, not AND; expected test values follow RTL.
+
+RTL-001 (fixed locally): cfg_load_controller.v never initialized read_state.
+The AXI register adapter has TIMEOUT=4 and returns zero on timeout, hiding
+the missing acknowledgement. Baseline board simulation passed IP/BRAM
+transactions but failed "Loader busy not asserted" at 34396 ns. Added one
+read_state <= READ_IDLE assignment to the controller's existing reset branch.
+Baseline evidence: logs/simulate_02_loader_failure.log.
+
+RTL-002 (fixed locally): Original BD ties LQG configuration-wrapper rst to 0.
+Its loaded_config/applied_config are then unknown before the first load/apply
+in RTL simulation. Added lqg_reset_sync (async assert, 4 processing-clock
+release stages), driven by existing PS peripheral reset, to this wrapper rst.
+This is NOT a change to LQG IP arithmetic or its software state-reset register.
+
+BD-001 (metadata fixes): cfg_ram MASTER_TYPE OTHER conflicted with BRAM_CTRL;
+clock ASSOCIATED_BUSIF had literal escaped quotes. Corrected local wrapper
+metadata. DAC output clock metadata was missing/overridden to 125 MHz even
+though its source MMCM generates 250 MHz; corrected metadata to 250 MHz,
+without changing the original MMCM or physical signal frequency.
+
+WRAP-001 (corrected diagnosis, fixed locally): The UPSTREAM BOARD WRAPPER
+used a 3-bit AXI address, but the current tested IP itself correctly uses
+4 bits and decodes offsets 0, 4, 8. The wrapper truncated offset 8; moreover
+XSim left the IP address MSB undriven (Z), causing decoder default selection.
+Widened only the board wrapper AWADDR/ARADDR from [2:0] to [3:0] to match
+the current IP; IP RTL is unchanged. This replaces the earlier tentative
+attribution of the address-width limitation to the generated IP itself.
+Full-board LED assertion failed at 47516 ns;
+diagnosis found axi_led_mask=0 and latched axi_awaddr containing Z, despite
+the initial register readback matching the test write. Evidence:
+logs/simulate_04_led_failure.log and artifacts/led_diagnosis.txt.
+
+SIMULATION ERROR: ERROR: [Common 17-39] 'launch_simulation' failed due to earlier errors.
+
+ERROR: [Common 17-39] 'launch_simulation' failed due to earlier errors.
+
+    while executing
+"launch_simulation -mode behavioral"
+
+SIMULATION ERROR: Board test did not pass; inspect simulation log
+Board test did not pass; inspect simulation log
+    while executing
+"error "Board test did not pass; inspect simulation log""
+    invoked from within
+"if {[get_value -radix unsigned /tb_board/test_pass] ne "1"} {error "Board test did not pass; inspect simulation log"}"
+
+REPAIR ERROR: 
+
+    while executing
+"update_module_reference [get_bd_cells LQG_wrapper/cfg_load_controller_LQG]"
+
+TCL-001: Passing BD cell objects to update_module_reference returned an empty
+error. Trying -cell also failed (unknown option). AMD UG835 specifies IP
+instance names / get_ips objects, not hierarchical BD cell objects; changed
+to get_ips -all with exact module-reference patterns. Reference:
+https://docs.amd.com/r/2024.1-English/ug835-vivado-tcl-commands/update_module_reference
+
+TCL-002 (fixed): report_ip_status does not accept -force. BD repair, validation,
+and HDL generation had completed before this reporting-only error. Removed
+the unsupported reporting option; final audit regenerates the report.
+
+BD-002: Redundant Tcl setters on explicit RTL interface attributes emitted
+read-only critical warnings (41-737). Removed them; the source attributes
+already supply the correct values. Reset synchronizer's async input was
+incorrectly declared associated with the destination clock, producing
+41-1343. Associate only its synchronized output rst with that clock.
+
+CDC-001: After the loader read/reset fixes, BRAM load and busy handshake worked,
+but configuration apply failed at 40964 ns. Original cdc_cfg_apply had
+RST_USED=false, INIT_SYNC_FF=false. Its pulse-toggle state can be poisoned by
+unknown source values during startup and has no warm-reset path. Enabled
+both-domain resets and initialization; source reset is inverted AXI resetn,
+destination reset is the new processing-clock reset. Arithmetic IP unchanged.
+Evidence: logs/simulate_03_apply_failure.log; pre-fix waveform in artifacts.
+
+TCL-003 (fixed): xpm_cdc_gen wraps the primitive's dest_rst as dest_rst_in.
+Corrected the pin name after checking the installed AMD wrapper HDL. Failed
+connection occurred before BD save; rerun applies the complete reset wiring.
+
+BD-003: Original three-bit exp_n_io output had no driver. Added an explicit
+3-bit zero constant in this experiment's BD, preserving external port/pinout.
+
+BD-004: Original PS7 enables SPI0 EMIO without wiring a peripheral. Its SS_I
+was auto-tied low. Connected it to explicit constant 1 per PS7 validation
+warning; other SPI settings/peripherals retained. SPI transactions not tested.
+
+BD-005 (reviewed): Updating the wrapper address from 3 to 4 bits generated
+IP_Flow 19-4706 / Coretcl 2-1280 "external port differences" during upgrade.
+This is the intended correction. Generated design_0.v now connects [3:0] on
+both AWADDR/ARADDR; final validation and simulation must use that design.
+
+SIM-002 (testbench, fixed): The first DAC edge assertions assumed BD CH1 was
+the lower concatenation half. Actual reference xlconcat In0=CH2=uk0 and
+In1=CH1=uk1. Corrected expected phases after inspecting generated design_0.v:
+rising edge emits uk0, falling edge emits uk1. The DUT routing was NOT changed.
+Earlier nonzero estimator/controller assertions had passed before this failure
+at 124876999 ps. Evidence: logs/simulate_05_dac_expectation_failure.log.
+
+REMAINING WARNINGS / LIMITS (not hidden or treated as functional proof):
+- BD 41-2384: BRAM native address ports are 32 bits, controllers/loader use
+  13 bits for 8 KiB memories. Vivado zero-extends the high bits. Configuration
+  word readback/loading and shared BRAM smoke tests pass; the entire BRAM
+  address space is not exhaustively tested. No artificial width change made.
+- IP_Flow 19-5661: processing clock has no associated bus. It clocks arithmetic;
+  only axi_sys_clk is associated with AXI. This separation is intentional.
+- VRFC 10-3705 warnings arise in AMD PS7 VIP / FIFO behavioral-model internals.
+  They did not prevent elaboration or assertions from passing. Vendor models
+  were not edited; behavior is not a substitute for hardware CDC/timing checks.
+- Behavioral FIFO models omit synchronization delay and BRAM models cannot
+  precisely validate simultaneous collision behavior. No such timing claim made.
+- BD 41-2937 / 41-2925 and Vivado-projutils-10 in export: exported Tcl requires
+  the local custom IP repositories / RTL files. These files are present and
+  the final project audit found zero missing source files; keep this tree intact.
+- PS7's generic EMIO SPI_0 SSIN-high reminder still prints during forced
+  validation, even with the explicit spi0_ss_idle constant-high net connected;
+  that connection is recorded in final_audit.txt. filemgmt 56-443 defaults an
+  unspecified ECC algorithm to ECC_NONE; no ECC capability is claimed here.
+- Reference COE file paths were unavailable when importing the original BD;
+  Vivado reset initialization files to default. Runtime software must write
+  the complete LQG configuration and DMA descriptors before use. Testbench
+  explicitly writes its configuration, not dependent on stale BRAM contents.
+- ADC channel 2 is disabled by original BD (LQG yk1=0). ADC bus CDC and the
+  250 MHz DAC-clock / 15.625 MHz data relationship require actual-board review.
+- Physical board revision/part/pinout and electrical timing remain unconfirmed.
+  Target is reference Red Pitaya xc7z020clg400-1, not automatically ZCU104.
+- No arbitrary-coefficient LQG closed-loop, saturation/rounding boundary,
+  sustained DMA data transfer, real DDR, Linux software or physical board test.
+- Earlier Model Composer post-export API exception is outside this Vivado run;
+  the already patched/tested IP was reused byte-for-byte at HDL level.
+
+REPAIR ERROR: ERROR: [Common 17-170] Unknown option '-cell', please type 'update_module_reference -help' for usage info.
+
+ERROR: [Common 17-170] Unknown option '-cell', please type 'update_module_reference -help' for usage info.
+
+    while executing
+"update_module_reference -cell [get_bd_cells LQG_wrapper/cfg_load_controller_LQG]"
+
+REPAIR ERROR: ERROR: [Common 17-170] Unknown option '-force', please type 'report_ip_status -help' for usage info.
+
+ERROR: [Common 17-170] Unknown option '-force', please type 'report_ip_status -help' for usage info.
+
+    while executing
+"report_ip_status -file $root/artifacts/ip_status.txt -force"
+
+SIMULATION ERROR: Board test did not pass; inspect simulation log
+Board test did not pass; inspect simulation log
+    while executing
+"error "Board test did not pass; inspect simulation log""
+    invoked from within
+"if {[get_value -radix unsigned /tb_board/test_pass] ne "1"} {error "Board test did not pass; inspect simulation log"}"
+
+REPAIR ERROR: ERROR: [Common 17-39] 'connect_bd_net' failed due to earlier errors.
+
+ERROR: [Common 17-39] 'connect_bd_net' failed due to earlier errors.
+
+    while executing
+"connect_bd_net [get_bd_pins LQG_wrapper/LQG_reset] [get_bd_pins LQG_wrapper/cdc_cfg_apply/dest_rst]"
+    invoked from within
+"if {[llength [get_bd_cells -quiet LQG_wrapper/cfg_axi_reset]] == 0} {
+        create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic:2.0 LQG_wr..."
+
+SIMULATION ERROR: Board test did not pass; inspect simulation log
+Board test did not pass; inspect simulation log
+    while executing
+"error "Board test did not pass; inspect simulation log""
+    invoked from within
+"if {[get_value -radix unsigned /tb_board/test_pass] ne "1"} {error "Board test did not pass; inspect simulation log"}"
+
+SIMULATION ERROR: Board test did not pass; inspect simulation log
+Board test did not pass; inspect simulation log
+    while executing
+"error "Board test did not pass; inspect simulation log""
+    invoked from within
+"if {[get_value -radix unsigned /tb_board/test_pass] ne "1"} {error "Board test did not pass; inspect simulation log"}"
